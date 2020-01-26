@@ -50,7 +50,8 @@
 CAN_HandleTypeDef hcan;
 
 /* USER CODE BEGIN PV */
-
+uint8_t hexbuffer[256];
+uint32_t pos32;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -113,35 +114,66 @@ int main(void)
     uint32_t status;
     uint8_t msg_buf[SLCAN_MTU];
 
-    uint16_t i = 0;
+    uint8_t slcan_str[SLCAN_MTU];
+    uint8_t slcan_str_index = 0;
 
     can_init();
     //can_enable();
 
     //HAL_CAN_Start(&hcan);
-
     /* USER CODE END 2 */
 
     /* Infinite loop */
     /* USER CODE BEGIN WHILE */
+//    int count_rx=0;
+//    int count_tx=0;
     while (1)
     {
         /* USER CODE END WHILE */
 
         /* USER CODE BEGIN 3 */
+    	if(is_can_msg_pending(CAN_RX_FIFO0))
+    	{
+    		if (can_rx(&rx_header, rx_payload) == HAL_OK)
+    		{
+    			status = slcan_parse_frame((uint8_t *) &msg_buf, &rx_header, rx_payload);
+    			CDC_Transmit_enqueue(msg_buf, status);
+//    			count_rx++;
+    		}
+    	}
 
-        while (!is_can_msg_pending(CAN_RX_FIFO0))
-            led_process();
+    	if(CDC_retrieveInputData(hexbuffer,&pos32)!=0)
+    	{
+    		uint8_t i;
+    		for (i = 0; i < pos32; i++)
+    		{
+    			if (hexbuffer[i] == '\r')
+    			{
 
-        status = can_rx(&rx_header, rx_payload);
-        if (status == HAL_OK)
-        {
-            status = slcan_parse_frame((uint8_t *) &msg_buf, &rx_header, rx_payload);
-            HAL_NVIC_DisableIRQ(USB_LP_IRQn);
-            CDC_Transmit_FS(msg_buf, status);
-            HAL_NVIC_EnableIRQ(USB_LP_IRQn);
-        }
-        led_process();
+    				auto result = slcan_parse_str(slcan_str, slcan_str_index);
+    				slcan_str_index = 0;
+
+//    				count_tx++;
+
+    				if(result == -1)
+    				{
+    					CDC_Transmit_enqueue((uint8_t *)"\a", 1);
+    				}
+    				else if(result == 0)
+    				{
+    					CDC_Transmit_enqueue((uint8_t *)"\r", 1);
+    				}
+    			}
+    			else
+    			{
+    				slcan_str[slcan_str_index++] = hexbuffer[i];
+    			}
+    		}
+    	}
+
+    	CDC_Transmit_FS();
+
+    	led_process();
 
     }
     /* USER CODE END 3 */
@@ -209,10 +241,10 @@ static void MX_CAN_Init(void)
     hcan.Init.Prescaler = 2;
     hcan.Init.Mode = CAN_MODE_NORMAL;
     hcan.Init.SyncJumpWidth = CAN_SJW_1TQ;
-    hcan.Init.TimeSeg1 = CAN_BS1_14TQ;
-    hcan.Init.TimeSeg2 = CAN_BS2_3TQ;
+    hcan.Init.TimeSeg1 = CAN_BS1_15TQ;
+    hcan.Init.TimeSeg2 = CAN_BS2_2TQ;
     hcan.Init.TimeTriggeredMode = DISABLE;
-    hcan.Init.AutoBusOff = DISABLE;
+    hcan.Init.AutoBusOff = ENABLE;
     hcan.Init.AutoWakeUp = DISABLE;
     hcan.Init.AutoRetransmission = DISABLE;
     hcan.Init.ReceiveFifoLocked = DISABLE;

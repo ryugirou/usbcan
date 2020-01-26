@@ -22,7 +22,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "usbd_cdc_if.h"
-#include "slcan.hpp"
 
 /* USER CODE BEGIN INCLUDE */
 
@@ -67,8 +66,8 @@
 /* USER CODE BEGIN PRIVATE_DEFINES */
 /* Define size for the receive and transmit buffer over CDC */
 /* It's up to user to redefine and/or remove those define */
-#define APP_RX_DATA_SIZE  1000
-#define APP_TX_DATA_SIZE  1000
+#define APP_RX_DATA_SIZE  256
+#define APP_TX_DATA_SIZE  256
 /* USER CODE END PRIVATE_DEFINES */
 
 /**
@@ -88,6 +87,41 @@
  * @}
  */
 
+#define MaxCommandsInBuffer 10 //max 10 commands can be received and saved without overwriting. Each command has a max size of APP_RX_DATA_SIZE
+static
+struct
+{
+	int
+	pos_receive, pos_process;
+	//pos_receive is the current position in buffer to save incoming data. pos_process is the index of data in buffer which has been processed.
+	//if pos_receive=pos_process, it means all data were processed, waiting for new data coming
+	unsigned
+	char
+	IsCommandDataReceived;
+	//anynumber >0 means data were received. 0 means no data is available
+	uint8_t UserRxBufferFS[MaxCommandsInBuffer][APP_RX_DATA_SIZE];
+	//it could save <MaxCommandsInBuffer> number of commands
+	uint8_t CommandsLens[MaxCommandsInBuffer];
+	//save the len of each command
+} s_RxBuffers;
+
+static
+struct
+{
+	int
+	pos_receive, pos_process;
+	//pos_receive is the current position in buffer to save incoming data. pos_process is the index of data in buffer which has been processed.
+	//if pos_receive=pos_process, it means all data were processed, waiting for new data coming
+	unsigned
+	char
+	IsCommandDataReceived;
+	//anynumber >0 means data were received. 0 means no data is available
+	uint8_t UserTxBufferFS[MaxCommandsInBuffer][APP_RX_DATA_SIZE];
+	//it could save <MaxCommandsInBuffer> number of commands
+	uint8_t CommandsLens[MaxCommandsInBuffer];
+	//save the len of each command
+} s_TxBuffers;
+
 /** @defgroup USBD_CDC_IF_Private_Variables USBD_CDC_IF_Private_Variables
  * @brief Private variables.
  * @{
@@ -95,15 +129,13 @@
 /* Create buffer for reception and transmission           */
 /* It's up to user to redefine and/or remove those define */
 /** Received data over USB are stored in this buffer      */
-uint8_t UserRxBufferFS[APP_RX_DATA_SIZE];
+
 
 /** Data to send over USB CDC are stored in this buffer   */
-uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
+
 
 /* USER CODE BEGIN PRIVATE_VARIABLES */
 
-uint8_t slcan_str[SLCAN_MTU];
-uint8_t slcan_str_index = 0;
 
 /* USER CODE END PRIVATE_VARIABLES */
 
@@ -156,8 +188,9 @@ static int8_t CDC_Init_FS(void)
 {
     /* USER CODE BEGIN 3 */
     /* Set Application Buffers */
-    USBD_CDC_SetTxBuffer(&hUsbDeviceFS, UserTxBufferFS, 0);
-    USBD_CDC_SetRxBuffer(&hUsbDeviceFS, UserRxBufferFS);
+    USBD_CDC_SetTxBuffer(&hUsbDeviceFS, s_TxBuffers.UserTxBufferFS[s_TxBuffers.pos_process], s_TxBuffers.CommandsLens[s_TxBuffers.pos_process]);
+//    USBD_CDC_SetRxBuffer(&hUsbDeviceFS, UserRxBufferFS);
+    USBD_CDC_SetRxBuffer(&hUsbDeviceFS, s_RxBuffers.UserRxBufferFS[s_RxBuffers.pos_receive]);
     return (USBD_OK);
     /* USER CODE END 3 */
 }
@@ -262,43 +295,25 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
  */
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
-    /* USER CODE BEGIN 6 */
-    uint8_t n = *Len;
-    uint8_t i;
-    for (i = 0; i < n; i++)
-    {
-        if (Buf[i] == '\r')
-        {
-            //slcan_parse_str(slcan_str, slcan_str_index);
-            //slcan_str_index = 0;
-
-            auto result = slcan_parse_str(slcan_str, slcan_str_index);
-            slcan_str_index = 0;
-
-            if(result == -1)
-            {
-                CDC_Transmit_FS((uint8_t *)"\a", 1);
-            }
-            else if(result == 0)
-            {
-                CDC_Transmit_FS((uint8_t *)"\r", 1);
-            }
-        }
-        else
-        {
-            slcan_str[slcan_str_index++] = Buf[i];
-        }
-    }
-
-
-    // prepare for next read
-    //USBD_CDC_SetRxBuffer(hUsbDevice_0, UserRxBufferFS);
-    //USBD_CDC_ReceivePacket(hUsbDevice_0);
-
-    USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
-    USBD_CDC_ReceivePacket(&hUsbDeviceFS);
-    return (USBD_OK);
-    /* USER CODE END 6 */
+	/* USER CODE BEGIN 6 */ // CDC_Receive_FS is a callback function. When data were received, the system calls this function. The received data can be accessed via Buf,and *Len
+	s_RxBuffers.IsCommandDataReceived=1;
+	//indicates data were received
+	s_RxBuffers.CommandsLens[s_RxBuffers.pos_receive]=*Len;
+	//only set the length, data was directly saved to buffer
+	s_RxBuffers.pos_receive++;
+	//move to next position to receive data
+	if
+	(s_RxBuffers.pos_receive>=MaxCommandsInBuffer)
+		//reach the last buffer, need to rewind to 0
+	{
+		s_RxBuffers.pos_receive=0;
+	}
+	//prepare to receive the next data
+	USBD_CDC_SetRxBuffer(&hUsbDeviceFS, s_RxBuffers.UserRxBufferFS[s_RxBuffers.pos_receive]);
+	//Set the buffer to receive incoming data
+	USBD_CDC_ReceivePacket(&hUsbDeviceFS);// Tell that you are ready to receive the next packet, otherwise you wouldn't be able to receive next data
+	return	USBD_OK;
+	/* USER CODE END 6 */
 }
 
 /**
@@ -312,22 +327,81 @@ static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
  * @param  Len: Number of data to be sent (in bytes)
  * @retval USBD_OK if all operations are OK else USBD_FAIL or USBD_BUSY
  */
-uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
+uint8_t CDC_Transmit_FS()
 {
-    uint8_t result = USBD_OK;
-    /* USER CODE BEGIN 7 */
-    USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*) hUsbDeviceFS.pClassData;
-    if (hcdc->TxState != 0)
-    {
-        return USBD_BUSY;
-    }
-    USBD_CDC_SetTxBuffer(&hUsbDeviceFS, Buf, Len);
-    result = USBD_CDC_TransmitPacket(&hUsbDeviceFS);
-    /* USER CODE END 7 */
-    return result;
+	uint8_t result = USBD_OK;
+	if(s_TxBuffers.IsCommandDataReceived==0)
+	{
+		return USBD_OK;
+		//no data received
+	}
+	USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*) hUsbDeviceFS.pClassData;
+	if (hcdc->TxState != 0)
+	{
+		return USBD_BUSY;
+	}
+
+	int index=s_TxBuffers.pos_process;
+	USBD_CDC_SetTxBuffer(&hUsbDeviceFS, s_TxBuffers.UserTxBufferFS[index], s_TxBuffers.CommandsLens[index]);
+	result = USBD_CDC_TransmitPacket(&hUsbDeviceFS);
+
+	//check if all data were processed.
+	s_TxBuffers.pos_process++;
+	if(s_TxBuffers.pos_process>=MaxCommandsInBuffer)//reach the last buffer, need to rewind to 0
+	{
+		s_TxBuffers.pos_process=0;
+	}
+	if(s_TxBuffers.pos_process==s_TxBuffers.pos_receive)
+	{
+		s_TxBuffers.IsCommandDataReceived=0;
+		//check if all data were processed
+	}
+
+	return result;
 }
 
-/* USER CODE BEGIN PRIVATE_FUNCTIONS_IMPLEMENTATION */
+int8_t CDC_retrieveInputData(uint8_t* Buf, uint32_t *Len)
+{
+	if(s_RxBuffers.IsCommandDataReceived==0)
+	{
+		return 0;
+	//no data received
+	}
+
+	int index=s_RxBuffers.pos_process;
+	*Len=s_RxBuffers.CommandsLens[index];
+	//return the length
+	memcpy(Buf,s_RxBuffers.UserRxBufferFS[index],*Len);
+	//check if all data were processed.
+	s_RxBuffers.pos_process++;
+	if(s_RxBuffers.pos_process>=MaxCommandsInBuffer)//reach the last buffer, need to rewind to 0
+	{
+		s_RxBuffers.pos_process=0;
+	}
+	if(s_RxBuffers.pos_process==s_RxBuffers.pos_receive)
+	{
+		s_RxBuffers.IsCommandDataReceived=0;
+		//check if all data were processed
+	}
+
+	return 1;
+}
+
+uint8_t CDC_Transmit_enqueue(uint8_t* Buf, uint16_t Len){
+
+	s_TxBuffers.IsCommandDataReceived=1;
+	//indicates data were received
+	s_TxBuffers.CommandsLens[s_TxBuffers.pos_receive]=Len;
+	memcpy(s_TxBuffers.UserTxBufferFS[s_TxBuffers.pos_receive],Buf,Len);
+	s_TxBuffers.pos_receive++;
+	//move to next position to receive data
+	if(s_TxBuffers.pos_receive>=MaxCommandsInBuffer)//reach the last buffer, need to rewind to 0
+	{
+		s_TxBuffers.pos_receive=0;
+	}
+	return	USBD_OK;
+}
+
 
 /* USER CODE END PRIVATE_FUNCTIONS_IMPLEMENTATION */
 
